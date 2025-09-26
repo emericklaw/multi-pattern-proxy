@@ -1,13 +1,14 @@
 services:
-  proxy:
-  build: .
-  container_name: multi-pattern-proxy
-  ports:
-    - "3000:3000"
-  environment:
-    URL_PATTERNS: >
-      GITHUB=https://github.com/{owner}/{repository}/releases/download/{tag}/{filename},
-      GITLAB=https://gitlab.com/{owner}/{repository}/-/releases/{tag}/downloads/{filename}
-    ALLOWED: >
-      owner=twbs;repository=bootstrap,
-      owner=facebook;repository=react*
+  multi-pattern-proxy:
+    build: .
+    container_name: multi-pattern-proxy
+    ports:
+      - "3000:3000"
+    environment:
+      LOG_LEVEL: INFO
+      URL_PATTERNS: >
+        GITHUB=https://github.com/{owner}/{repository}/releases/download/{tag}/{filename},
+        GITLAB=https://gitlab.com/{owner}/{repository}/-/releases/{tag}/downloads/{filename}
+      ALLOWED: >
+        owner=twbs;repository=bootstrap,
+        owner=facebook;repository=react*
