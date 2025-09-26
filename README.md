@@ -21,25 +21,34 @@ A **multi-pattern, wildcard-enabled CORS proxy** that dynamically fetches files 
   Format: `SERVICE=PATTERN,SERVICE2=PATTERN2`
 
   Example:
-  URL_PATTERNS="GITHUB=https://github.com/{owner}/{repository}/releases/download/{tag}/{filename},GITLAB=https://gitlab.com/{owner}/{repository}/-/releases/{tag}/downloads/{filename}"
+  `URL_PATTERNS="GITHUB=https://github.com/{owner}/{repository}/releases/download/{tag}/{filename},GITLAB=https://gitlab.com/{owner}/{repository}/-/releases/{tag}/downloads/{filename}"`
 
 * **`ALLOWED`** (optional): Comma-separated list of allow rules with wildcards (`*`)
   Format: `key=value;key=value,...`
 
   Example:
-  ALLOWED="owner=twbs;repository=bootstrap,owner=facebook;repository=react*"
+  `ALLOWED="owner=twbs;repository=bootstrap,owner=facebook;repository=react*"`
+
+* **`LOG_LEVEL`** (optional): Controls logging verbosity. Default: `INFO`
+  - `DEBUG`: Shows all logs including detailed request processing
+  - `INFO`: Shows general information and request summaries (default)
+  - `WARN`: Shows warnings and errors only
+  - `ERROR`: Shows only errors
+
+  Example:
+  `LOG_LEVEL="DEBUG"`
 
 ---
 
 ## URL Format
 
-/proxy/service/\<SERVICE>/\<key1>/\<value1>/\<key2>/\<value2>/...
+`/proxy/service/\<SERVICE>/\<key1>/\<value1>/\<key2>/\<value2>/...`
 
 * `service` selects the URL pattern
 * Remaining segments are **key/value pairs** corresponding to placeholders in the URL pattern
 
 Example:
-/service/GITHUB/owner/twbs/repository/bootstrap/tag/v5.3.8/filename/bootstrap-5.3.8-dist.zip
+`/service/GITHUB/owner/twbs/repository/bootstrap/tag/v5.3.8/filename/bootstrap-5.3.8-dist.zip`
 
 ---
 
@@ -47,35 +56,42 @@ Example:
 
 ### Build the Docker Image
 
+```bash
 docker build -t multi-pattern-proxy .
+```
 
 ### Run with Environment Variables
 
-docker run -p 3000:3000 
--e URL_PATTERNS="GITHUB=https://github.com/{owner}/{repository}/releases/download/{tag}/{filename},GITLAB=https://gitlab.com/{owner}/{repository}/-/releases/{tag}/downloads/{filename}" 
--e ALLOWED="owner=twbs;repository=bootstrap,owner=facebook;repository=react*" 
-multi-pattern-proxy
+```bash
+docker run -p 3000:3000 \
+  -e URL_PATTERNS="GITHUB=https://github.com/{owner}/{repository}/releases/download/{tag}/{filename},GITLAB=https://gitlab.com/{owner}/{repository}/-/releases/{tag}/downloads/{filename}" \
+  -e ALLOWED="owner=twbs;repository=bootstrap,owner=facebook;repository=react*" \
+  multi-pattern-proxy
+```
 
 ### Docker Compose
 
 ```yaml
 services:
   proxy:
-  build: .
-  container_name: multi-pattern-proxy
-  ports:
-    - "3000:3000"
-  environment:
-    URL_PATTERNS: >
-      GITHUB=https://github.com/{owner}/{repository}/releases/download/{tag}/{filename},
-      GITLAB=https://gitlab.com/{owner}/{repository}/-/releases/{tag}/downloads/{filename}
-    ALLOWED: >
-      owner=twbs;repository=bootstrap,
-      owner=facebook;repository=react*
+    multi-pattern-proxy: .
+    container_name: multi-pattern-proxy
+    ports:
+      - "3000:3000"
+    environment:
+      LOG_LEVEL: INFO
+      URL_PATTERNS: >
+        GITHUB=https://github.com/{owner}/{repository}/releases/download/{tag}/{filename},
+        GITLAB=https://gitlab.com/{owner}/{repository}/-/releases/{tag}/downloads/{filename}
+      ALLOWED: >
+        owner=twbs;repository=bootstrap,
+        owner=facebook;repository=react*
 ```
 
 Run:
+```bash
 docker-compose up -d
+```
 
 ---
 
@@ -92,13 +108,13 @@ docker-compose up -d
 ## Development
 
 Install dependencies:
-npm install
+`npm install`
 
 Run locally with hot reload:
-npm run dev
+`npm run dev`
 
 Run normally:
-npm start
+`npm start`
 
 ---
 
