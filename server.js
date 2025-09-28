@@ -34,17 +34,34 @@ app.use((req, res, next) => {
   next();
 });
 
-// Parse URL_PATTERNS from env
+// Parse URL_PATTERNS or URL_PATTERN from env
 const URL_PATTERNS_ENV = process.env.URL_PATTERNS;
-if (!URL_PATTERNS_ENV) {
-  logError("❌ Missing required environment variable: URL_PATTERNS");
+const URL_PATTERN_ENV = process.env.URL_PATTERN;
+const USE_POSITIONAL_PARAMS = process.env.USE_POSITIONAL_PARAMS === "true";
+
+// Error handling: cannot use both URL_PATTERNS and URL_PATTERN
+if (URL_PATTERNS_ENV && URL_PATTERN_ENV) {
+  logError("❌ Cannot use both URL_PATTERNS and URL_PATTERN environment variables. Use only one.");
+  process.exit(1);
+}
+
+// Error handling: at least one must be provided
+if (!URL_PATTERNS_ENV && !URL_PATTERN_ENV) {
+  logError("❌ Missing required environment variable: URL_PATTERNS or URL_PATTERN");
   process.exit(1);
 }
 
 const URL_PATTERNS = {};
-for (const entry of URL_PATTERNS_ENV.split(",")) {
-  const [key, url] = entry.split("=");
-  if (key && url) URL_PATTERNS[key] = url;
+
+if (URL_PATTERNS_ENV) {
+  // Parse multiple patterns: SERVICE=URL,SERVICE2=URL2
+  for (const entry of URL_PATTERNS_ENV.split(",")) {
+    const [key, url] = entry.split("=");
+    if (key && url) URL_PATTERNS[key] = url;
+  }
+} else if (URL_PATTERN_ENV) {
+  // Single pattern: use "DEFAULT" as the service key
+  URL_PATTERNS["DEFAULT"] = URL_PATTERN_ENV;
 }
 
 // Parse ALLOWED rules with wildcard regex
@@ -89,31 +106,31 @@ function isAllowed(params) {
     Object.entries(rule).every(([k, regex]) => params[k] && regex.test(params[k]))
   );
 }
-
-// Catch all /proxy/service/<SERVICE>/key/value/... routes
-app.get("/service/:service/*", async (req, res) => {
-  const service = req.params.service;
+// Helper: process request with given service pattern
+async function processRequest(req, res, service, segments) {
   logDebug(`🔄 Processing request for service: ${service}`);
-  
-  if (!URL_PATTERNS[service]) {
-    logWarn(`❌ Invalid service requested: ${service}`);
-    return res.status(400).json({ error: "Invalid service" });
-  }
-
-  // Parse remaining path into key/value pairs
-  const segments = req.params[0].split("/"); // ["owner", "vercel", "repository", "next.js", ...]
   logDebug(`📝 URL segments:`, segments);
   
-  if (segments.length % 2 !== 0) {
-    logWarn(`❌ Invalid number of URL segments: ${segments.length}`);
-    return res.status(400).json({ error: "Invalid number of URL segments" });
-  }
-
   const params = {};
-  for (let i = 0; i < segments.length; i += 2) {
-    params[segments[i]] = segments[i + 1];
+  
+  if (USE_POSITIONAL_PARAMS) {
+    // Use positional parameters: {1}, {2}, {3}, etc.
+    for (let i = 0; i < segments.length; i++) {
+      params[(i + 1).toString()] = segments[i];
+    }
+    logDebug(`📋 Parsed positional parameters:`, params);
+  } else {
+    // Use named key/value pairs: key/value/key2/value2
+    if (segments.length % 2 !== 0) {
+      logWarn(`❌ Invalid number of URL segments: ${segments.length}`);
+      return res.status(400).json({ error: "Invalid number of URL segments" });
+    }
+
+    for (let i = 0; i < segments.length; i += 2) {
+      params[segments[i]] = segments[i + 1];
+    }
+    logDebug(`📋 Parsed named parameters:`, params);
   }
-  logDebug(`📋 Parsed parameters:`, params);
 
   // Validate placeholders
   const missing = validatePlaceholders(URL_PATTERNS[service], params);
@@ -164,11 +181,44 @@ app.get("/service/:service/*", async (req, res) => {
     logError(`💥 Error fetching target: ${err.message}`);
     res.status(500).json({ error: "Failed to fetch target" });
   }
-});
+}
+
+// Route for single URL_PATTERN (no service name required)
+if (URL_PATTERN_ENV) {
+  app.get("/*", async (req, res) => {
+    const path = req.params[0];
+    
+    if (!path) {
+      logWarn(`❌ Empty path provided`);
+      return res.status(400).json({ error: "Path required" });
+    }
+
+    // Parse path into key/value pairs
+    const segments = path.split("/").filter(s => s); // Remove empty segments
+    await processRequest(req, res, "DEFAULT", segments);
+  });
+}
+
+// Catch all /service/<SERVICE>/key/value/... routes (only for URL_PATTERNS)
+if (URL_PATTERNS_ENV) {
+  app.get("/service/:service/*", async (req, res) => {
+    const service = req.params.service;
+    
+    if (!URL_PATTERNS[service]) {
+      logWarn(`❌ Invalid service requested: ${service}`);
+      return res.status(400).json({ error: "Invalid service" });
+    }
+
+    // Parse remaining path into key/value pairs
+    const segments = req.params[0].split("/");
+    await processRequest(req, res, service, segments);
+  });
+}
 
 app.listen(3000, () => {
   logInfo("✅ Proxy running on port 3000");
   logInfo(`📊 Log level: ${LOG_LEVEL}`);
+  logInfo(`🔢 Parameter mode: ${USE_POSITIONAL_PARAMS ? 'Positional ({1}, {2}, {3}, ...)' : 'Named (key/value pairs)'}`);
   logInfo("📚 Available services and their parameters:");
   
   for (const [service, pattern] of Object.entries(URL_PATTERNS)) {
@@ -176,6 +226,12 @@ app.listen(3000, () => {
     logInfo(`  🔸 ${service}:`);
     logInfo(`     URL pattern: ${pattern}`);
     logInfo(`     Parameters: ${placeholders.length > 0 ? placeholders.join(', ') : 'none'}`);
+    
+    if (USE_POSITIONAL_PARAMS && placeholders.some(p => /^\d+$/.test(p))) {
+      const examplePath = placeholders.filter(p => /^\d+$/.test(p)).map(p => `<value${p}>`).join('/');
+      const exampleUrl = URL_PATTERNS_ENV ? `/service/${service}/${examplePath}` : `/${examplePath}`;
+      logInfo(`     Example URL: ${exampleUrl}`);
+    }
   }
   
   if (ALLOWED.length > 0) {
