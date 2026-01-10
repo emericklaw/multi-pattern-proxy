@@ -95,7 +95,16 @@ function validatePlaceholders(pattern, params) {
 // Helper: build URL
 function buildUrl(pattern, params) {
   return pattern.replace(/\{(\w+)\}/g, (_, key) => {
-    return encodeURIComponent(params[key] || "");
+    const value = params[key] || "";
+    
+    // If using positional params and this looks like a path (contains /),
+    // don't encode the slashes
+    if (USE_POSITIONAL_PARAMS && value.includes('/')) {
+      // Split by /, encode each segment, then rejoin with /
+      return value.split('/').map(segment => encodeURIComponent(segment)).join('/');
+    } else {
+      return encodeURIComponent(value);
+    }
   });
 }
 
@@ -115,20 +124,58 @@ async function processRequest(req, res, service, segments) {
   
   if (USE_POSITIONAL_PARAMS) {
     // Use positional parameters: {1}, {2}, {3}, etc.
+    // Get all placeholders from the pattern to determine the highest number
+    const placeholders = [...URL_PATTERNS[service].matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
+    const numericPlaceholders = placeholders.filter(p => /^\d+$/.test(p)).map(Number).sort((a, b) => a - b);
+    const maxPlaceholder = Math.max(...numericPlaceholders);
+    
     for (let i = 0; i < segments.length; i++) {
-      params[(i + 1).toString()] = segments[i];
+      const paramIndex = i + 1;
+      
+      // If this is the last (highest numbered) placeholder and there are more segments,
+      // join all remaining segments with "/"
+      if (paramIndex === maxPlaceholder && i < segments.length - 1) {
+        params[paramIndex.toString()] = segments.slice(i).join('/');
+        logDebug(`📋 Parameter {${paramIndex}} captures remaining path: ${params[paramIndex.toString()]}`);
+        break;
+      } else {
+        params[paramIndex.toString()] = segments[i];
+      }
     }
     logDebug(`📋 Parsed positional parameters:`, params);
   } else {
     // Use named key/value pairs: key/value/key2/value2
-    if (segments.length % 2 !== 0) {
-      logWarn(`❌ Invalid number of URL segments: ${segments.length}`);
-      return res.status(400).json({ error: "Invalid number of URL segments" });
-    }
-
+    // Check if any parameter has -last suffix (captures remaining segments)
+    const placeholders = [...URL_PATTERNS[service].matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
+    const hasLastParam = placeholders.some(p => p.endsWith('-last'));
+    
+    let foundLastParam = false;
+    
     for (let i = 0; i < segments.length; i += 2) {
-      params[segments[i]] = segments[i + 1];
+      const key = segments[i];
+      
+      // If this key ends with -last, capture all remaining segments
+      if (key.endsWith('-last') && i + 1 < segments.length) {
+        const cleanKey = key.slice(0, -5); // Remove '-last' suffix
+        params[cleanKey] = segments.slice(i + 1).join('/');
+        logDebug(`📋 Parameter ${cleanKey} captures remaining path: ${params[cleanKey]}`);
+        foundLastParam = true;
+        break;
+      } else if (i + 1 < segments.length) {
+        params[key] = segments[i + 1];
+      } else {
+        // Odd number of segments and we're at the last one
+        logWarn(`❌ Missing value for key: ${key}`);
+        return res.status(400).json({ error: `Missing value for key: ${key}` });
+      }
     }
+    
+    // Check for odd segments only if we didn't find a -last parameter
+    if (!foundLastParam && segments.length % 2 !== 0) {
+      logWarn(`❌ Invalid number of URL segments: ${segments.length}`);
+      return res.status(400).json({ error: "Invalid number of URL segments" }); 
+    }
+    
     logDebug(`📋 Parsed named parameters:`, params);
   }
 
