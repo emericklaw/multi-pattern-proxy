@@ -60,7 +60,8 @@ A **multi-pattern, wildcard-enabled CORS proxy** that dynamically fetches files 
   Example:`USE_POSITIONAL_PARAMS=true`
 
 * **`LOG_LEVEL`** (optional): Controls logging verbosity. Default: `INFO`
-  * `DEBUG`: Shows all logs including detailed request processing
+  * `TRACE`: Shows all logs including detailed request processing
+  * `DEBUG`: Shows detailed debug logs
   * `INFO`: Shows general information and request summaries (default)
   * `WARN`: Shows warnings and errors only
   * `ERROR`: Shows only errors
@@ -375,5 +376,5 @@ Run normally:
   * All parameters are validated against the URL pattern before processing
 
 * **Logging:**
-  * Set `LOG_LEVEL=DEBUG` to see detailed request processing information
+  * Set `LOG_LEVEL=TRACE` to see detailed request processing information
   * Request and response details are logged at appropriate levels

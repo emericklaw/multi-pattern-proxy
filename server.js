@@ -7,7 +7,7 @@ const app = express();
 
 // Parse LOG_LEVEL from env (DEBUG, INFO, WARN, ERROR)
 const LOG_LEVEL = (process.env.LOG_LEVEL || "INFO").toUpperCase();
-const logLevels = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
+const logLevels = { TRACE: 0, DEBUG: 1, INFO: 2, WARN: 3, ERROR: 4 };
 const currentLogLevel = logLevels[LOG_LEVEL] ?? logLevels.INFO;
 
 // Parse cache-related environment variables
@@ -18,6 +18,10 @@ const CACHE_CLEANUP_INTERVAL = parseInt(process.env.CACHE_CLEANUP_INTERVAL || "1
 // Logging functions
 function getTimestamp() {
   return new Date().toISOString();
+}
+
+function logTrace(...args) {
+  if (currentLogLevel <= logLevels.TRACE) console.log(`[${getTimestamp()}] [TRACE]`, ...args);
 }
 
 function logDebug(...args) {
@@ -39,7 +43,7 @@ function logError(...args) {
 // Add request logging middleware
 app.use((req, res, next) => {
   logInfo(`${req.method} ${req.url}`);
-  logDebug(`Request headers:`, req.headers);
+  logTrace(`Request headers:`, req.headers);
   logDebug(`Request path: ${req.path}`);
   logDebug(`Request params:`, req.params);
   next();
