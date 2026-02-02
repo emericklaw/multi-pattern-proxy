@@ -1,4 +1,7 @@
 import express from "express";
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
 
 const app = express();
 
@@ -6,6 +9,11 @@ const app = express();
 const LOG_LEVEL = (process.env.LOG_LEVEL || "INFO").toUpperCase();
 const logLevels = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
 const currentLogLevel = logLevels[LOG_LEVEL] ?? logLevels.INFO;
+
+// Parse cache-related environment variables
+const CACHE_API_KEY = process.env.CACHE_API_KEY; // Only use if explicitly provided
+const CACHE_DIR = "/cache";
+const CACHE_CLEANUP_INTERVAL = parseInt(process.env.CACHE_CLEANUP_INTERVAL || "1800", 10); // Default: 30 minutes (1800 seconds)
 
 // Logging functions
 function getTimestamp() {
@@ -31,6 +39,9 @@ function logError(...args) {
 // Add request logging middleware
 app.use((req, res, next) => {
   logInfo(`${req.method} ${req.url}`);
+  logDebug(`Request headers:`, req.headers);
+  logDebug(`Request path: ${req.path}`);
+  logDebug(`Request params:`, req.params);
   next();
 });
 
@@ -64,6 +75,13 @@ if (URL_PATTERNS_ENV) {
   URL_PATTERNS["DEFAULT"] = URL_PATTERN_ENV;
 }
 
+// Parse cache timeouts for each pattern
+const CACHE_TIMEOUTS = {};
+for (const [service, pattern] of Object.entries(URL_PATTERNS)) {
+  CACHE_TIMEOUTS[service] = parseCacheTimeout(pattern);
+  URL_PATTERNS[service] = removeCacheFlag(pattern);
+}
+
 // Parse ALLOWED rules with wildcard regex
 const ALLOWED = (process.env.ALLOWED || "")
   .split(",")
@@ -82,6 +100,160 @@ const ALLOWED = (process.env.ALLOWED || "")
     return obj;
   })
   .filter((r) => Object.keys(r).length > 0);
+
+// Cache utility functions
+function ensureCacheDir(service) {
+  const serviceDir = path.join(CACHE_DIR, service);
+  if (!fs.existsSync(serviceDir)) {
+    fs.mkdirSync(serviceDir, { recursive: true });
+  }
+  return serviceDir;
+}
+
+function generateCacheKey(targetUrl, params) {
+  const hash = crypto.createHash('md5').update(targetUrl).digest('hex');
+  return hash;
+}
+
+function getCacheFilePaths(service, cacheKey) {
+  const serviceDir = ensureCacheDir(service);
+  return {
+    content: path.join(serviceDir, `${cacheKey}.cache`),
+    metadata: path.join(serviceDir, `${cacheKey}.meta`)
+  };
+}
+
+function isCacheValid(cacheFilePaths, cacheTimeout) {
+  if (!fs.existsSync(cacheFilePaths.content) || !fs.existsSync(cacheFilePaths.metadata)) {
+    return false;
+  }
+  
+  const stats = fs.statSync(cacheFilePaths.metadata);
+  const ageSeconds = (Date.now() - stats.mtime.getTime()) / 1000;
+  return ageSeconds < cacheTimeout;
+}
+
+function readCacheFile(cacheFilePaths) {
+  try {
+    const metadata = JSON.parse(fs.readFileSync(cacheFilePaths.metadata, 'utf8'));
+    const content = fs.readFileSync(cacheFilePaths.content);
+    return { metadata, content };
+  } catch (err) {
+    logError(`Error reading cache files: ${err.message}`);
+    return null;
+  }
+}
+
+function writeCacheFile(cacheFilePaths, content, contentType) {
+  try {
+    const metadata = { contentType, timestamp: Date.now() };
+    fs.writeFileSync(cacheFilePaths.metadata, JSON.stringify(metadata, null, 2));
+    fs.writeFileSync(cacheFilePaths.content, content);
+    logDebug(`📁 Cached files: ${cacheFilePaths.content} and ${cacheFilePaths.metadata}`);
+  } catch (err) {
+    logError(`Error writing cache files: ${err.message}`);
+  }
+}
+
+function parseCacheTimeout(pattern) {
+  const cacheMatch = pattern.match(/\|cache:(\d+)/);
+  if (cacheMatch) {
+    return parseInt(cacheMatch[1], 10);
+  }
+  return 0; // No caching
+}
+
+function removeCacheFlag(pattern) {
+  return pattern.replace(/\|cache:\d+/, '');
+}
+
+// Cache cleanup functions
+function cleanExpiredCacheFiles() {
+  let totalCleaned = 0;
+  
+  try {
+    if (!fs.existsSync(CACHE_DIR)) {
+      return totalCleaned;
+    }
+    
+    const services = fs.readdirSync(CACHE_DIR, { withFileTypes: true })
+      .filter(dirent => dirent.isDirectory())
+      .map(dirent => dirent.name);
+    
+    for (const service of services) {
+      const serviceDir = path.join(CACHE_DIR, service);
+      const cacheTimeout = CACHE_TIMEOUTS[service];
+      
+      // Skip cleanup if no cache timeout is set for this service
+      if (!cacheTimeout || cacheTimeout <= 0) {
+        continue;
+      }
+      
+      try {
+        const files = fs.readdirSync(serviceDir);
+        let serviceCleaned = 0;
+        
+        for (const file of files) {
+          if (file.endsWith('.cache')) {
+            const baseName = file.slice(0, -6); // Remove .cache extension
+            const cacheFilePaths = {
+              content: path.join(serviceDir, file),
+              metadata: path.join(serviceDir, `${baseName}.meta`)
+            };
+            
+            // Check if cache file is expired
+            if (!isCacheValid(cacheFilePaths, cacheTimeout)) {
+              // Remove both content and metadata files
+              if (fs.existsSync(cacheFilePaths.content)) {
+                fs.unlinkSync(cacheFilePaths.content);
+              }
+              if (fs.existsSync(cacheFilePaths.metadata)) {
+                fs.unlinkSync(cacheFilePaths.metadata);
+              }
+              serviceCleaned++;
+              totalCleaned++;
+              logDebug(`🗑️ Cleaned expired cache files: ${baseName}`);
+            }
+          }
+        }
+        
+        if (serviceCleaned > 0) {
+          logInfo(`🧹 Cleaned ${serviceCleaned} expired cache files for service: ${service}`);
+        }
+      } catch (err) {
+        logError(`Error cleaning cache for service ${service}: ${err.message}`);
+      }
+    }
+    
+    if (totalCleaned > 0) {
+      logInfo(`✨ Cache cleanup completed: removed ${totalCleaned} expired files`);
+    }
+  } catch (err) {
+    logError(`Error during cache cleanup: ${err.message}`);
+  }
+  
+  return totalCleaned;
+}
+
+function startCacheCleanupScheduler() {
+  // Use configurable cleanup interval (convert seconds to milliseconds)
+  const CLEANUP_INTERVAL_MS = CACHE_CLEANUP_INTERVAL * 1000;
+  
+  // Run initial cleanup after 5 minutes
+  setTimeout(() => {
+    logInfo("🧹 Starting initial cache cleanup...");
+    cleanExpiredCacheFiles();
+    
+    // Then run periodically
+    setInterval(() => {
+      logDebug("🧹 Running scheduled cache cleanup...");
+      cleanExpiredCacheFiles();
+    }, CLEANUP_INTERVAL_MS);
+    
+  }, 5 * 60 * 1000); // 5 minutes delay for initial cleanup
+  
+  logInfo(`⏰ Cache cleanup scheduler started (runs every ${CACHE_CLEANUP_INTERVAL / 60} minutes)`);
+}
 
 // Helper: validate required placeholders
 function validatePlaceholders(pattern, params) {
@@ -196,6 +368,44 @@ async function processRequest(req, res, service, segments) {
   const targetUrl = buildUrl(URL_PATTERNS[service], params);
   logDebug(`🎯 Target URL: ${targetUrl}`);
 
+  const cacheTimeout = CACHE_TIMEOUTS[service];
+  const useCache = cacheTimeout > 0;
+  
+  // Check cache first if caching is enabled
+  if (useCache) {
+    const cacheKey = generateCacheKey(targetUrl, params);
+    const cacheFilePaths = getCacheFilePaths(service, cacheKey);
+    
+    if (isCacheValid(cacheFilePaths, cacheTimeout)) {
+      logDebug(`💾 Serving from cache: ${cacheFilePaths.content}`);
+      const cached = readCacheFile(cacheFilePaths);
+      if (cached) {
+        // Calculate cache timing information
+        const cacheAgeSeconds = Math.floor((Date.now() - cached.metadata.timestamp) / 1000);
+        const cacheExpiresInSeconds = Math.max(0, cacheTimeout - cacheAgeSeconds);
+        const cacheExpiresAt = new Date(cached.metadata.timestamp + (cacheTimeout * 1000));
+        
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Content-Type", cached.metadata.contentType || "application/octet-stream");
+        res.setHeader("X-Cache", "HIT");
+        res.setHeader("X-Cache-Age", cacheAgeSeconds.toString());
+        res.setHeader("X-Cache-Expires-In", cacheExpiresInSeconds.toString());
+        res.setHeader("X-Cache-Expires-At", cacheExpiresAt.toISOString());
+        res.setHeader("Cache-Control", `public, max-age=${cacheExpiresInSeconds}`);
+        
+        if (params.filename) {
+          res.setHeader(
+            "Content-Disposition",
+            `attachment; filename="${params.filename}"`
+          );
+        }
+        
+        logInfo(`✅ Served ${service} request from cache: ${cached.content.length} bytes (age: ${cacheAgeSeconds}s, expires in: ${cacheExpiresInSeconds}s)`);
+        return res.send(cached.content);
+      }
+    }
+  }
+
   try {
     logDebug(`🌐 Fetching from upstream...`);
     const response = await fetch(targetUrl);
@@ -207,14 +417,32 @@ async function processRequest(req, res, service, segments) {
     }
 
     const buffer = Buffer.from(await response.arrayBuffer());
+    const contentType = response.headers.get("content-type") || "application/octet-stream";
     logDebug(`✅ Successfully fetched ${buffer.length} bytes`);
+    
+    // Cache the response if caching is enabled and response is 200
+    if (useCache && response.status === 200) {
+      const cacheKey = generateCacheKey(targetUrl, params);
+      const cacheFilePaths = getCacheFilePaths(service, cacheKey);
+      writeCacheFile(cacheFilePaths, buffer, contentType);
+    }
+    
     logInfo(`✅ Served ${service} request: ${buffer.length} bytes`);
     
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader(
-      "Content-Type",
-      response.headers.get("content-type") || "application/octet-stream"
-    );
+    res.setHeader("Content-Type", contentType);
+    
+    // Add cache headers based on cache state
+    if (useCache) {
+      res.setHeader("X-Cache", "MISS");
+      res.setHeader("X-Cache-Age", "0");
+      res.setHeader("X-Cache-Expires-In", cacheTimeout.toString());
+      res.setHeader("X-Cache-Expires-At", new Date(Date.now() + (cacheTimeout * 1000)).toISOString());
+      res.setHeader("Cache-Control", `public, max-age=${cacheTimeout}`);
+    } else {
+      res.setHeader("X-Cache", "DISABLED");
+      res.setHeader("Cache-Control", "no-cache");
+    }
 
     if (params.filename) {
       res.setHeader(
@@ -262,17 +490,133 @@ if (URL_PATTERNS_ENV) {
   });
 }
 
+// Cache management endpoints (only if CACHE_API_KEY is provided)
+if (CACHE_API_KEY) {
+  // Cache invalidation endpoint
+  app.delete('/invalidate-cache/:service', async (req, res) => {
+    const { service } = req.params;
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      logWarn(`🚫 Missing or invalid Authorization header`);
+      return res.status(401).json({ error: "Missing or invalid Authorization header" });
+    }
+    
+    const apiKey = authHeader.slice(7); // Remove 'Bearer ' prefix
+    
+    if (apiKey !== CACHE_API_KEY) {
+      logWarn(`🚫 Invalid API key for cache invalidation`);
+      return res.status(401).json({ error: "Invalid API key" });
+    }
+    
+    if (!URL_PATTERNS[service]) {
+      logWarn(`❌ Invalid service for cache invalidation: ${service}`);
+      return res.status(400).json({ error: "Invalid service" });
+    }
+    
+    try {
+      const serviceDir = path.join(CACHE_DIR, service);
+      if (fs.existsSync(serviceDir)) {
+        const files = fs.readdirSync(serviceDir);
+        let deletedCount = 0;
+        
+        for (const file of files) {
+          if (file.endsWith('.cache')) {
+            const baseName = file.slice(0, -6); // Remove .cache extension
+            const contentFile = path.join(serviceDir, file);
+            const metadataFile = path.join(serviceDir, `${baseName}.meta`);
+            
+            if (fs.existsSync(contentFile)) {
+              fs.unlinkSync(contentFile);
+            }
+            if (fs.existsSync(metadataFile)) {
+              fs.unlinkSync(metadataFile);
+            }
+            deletedCount++;
+          }
+        }
+        
+        logInfo(`🗑️ Invalidated ${deletedCount} cache files for service: ${service}`);
+        res.json({ 
+          success: true, 
+          message: `Invalidated ${deletedCount} cache files for service: ${service}`,
+          deletedFiles: deletedCount
+        });
+      } else {
+        res.json({ 
+          success: true, 
+          message: `No cache files found for service: ${service}`,
+          deletedFiles: 0
+        });
+      }
+    } catch (err) {
+      logError(`💥 Error invalidating cache for service ${service}: ${err.message}`);
+      res.status(500).json({ error: "Failed to invalidate cache" });
+    }
+  });
+
+  // Cache cleanup endpoint - manually trigger cleanup of expired files
+  app.post('/cleanup-cache', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      logWarn(`🚫 Missing or invalid Authorization header`);
+      return res.status(401).json({ error: "Missing or invalid Authorization header" });
+    }
+    
+    const apiKey = authHeader.slice(7); // Remove 'Bearer ' prefix
+    
+    if (apiKey !== CACHE_API_KEY) {
+      logWarn(`🚫 Invalid API key for cache cleanup`);
+      return res.status(401).json({ error: "Invalid API key" });
+    }
+    
+    try {
+      logInfo("🧹 Manual cache cleanup triggered via API");
+      const cleanedCount = cleanExpiredCacheFiles();
+      res.json({
+        success: true,
+        message: `Cache cleanup completed: removed ${cleanedCount} expired files`,
+        cleanedFiles: cleanedCount
+      });
+    } catch (err) {
+      logError(`💥 Error during manual cache cleanup: ${err.message}`);
+      res.status(500).json({ error: "Failed to cleanup cache" });
+    }
+  });
+}
+
 app.listen(3000, () => {
   logInfo("✅ Proxy running on port 3000");
   logInfo(`📊 Log level: ${LOG_LEVEL}`);
   logInfo(`🔢 Parameter mode: ${USE_POSITIONAL_PARAMS ? 'Positional ({1}, {2}, {3}, ...)' : 'Named (key/value pairs)'}`);
+  logInfo(`💾 Cache directory: ${CACHE_DIR}`);
+  
+  // Check if any services have caching enabled
+  const cachingEnabled = Object.values(CACHE_TIMEOUTS).some(timeout => timeout > 0);
+  
+  if (CACHE_API_KEY) {
+    logInfo(`🔐 Cache management API key: ${CACHE_API_KEY.slice(0, 4)}***`);
+    logInfo("🔧 Cache management endpoints enabled");
+  } else {
+    logInfo("🚫 Cache management disabled (no CACHE_API_KEY provided)");
+  }
+  
+  if (cachingEnabled) {
+    startCacheCleanupScheduler();
+  } else {
+    logInfo("🚫 Cache cleanup disabled (no services have caching enabled)");
+  }
+  
   logInfo("📚 Available services and their parameters:");
   
   for (const [service, pattern] of Object.entries(URL_PATTERNS)) {
     const placeholders = [...pattern.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
+    const cacheTimeout = CACHE_TIMEOUTS[service];
     logInfo(`  🔸 ${service}:`);
     logInfo(`     URL pattern: ${pattern}`);
     logInfo(`     Parameters: ${placeholders.length > 0 ? placeholders.join(', ') : 'none'}`);
+    logInfo(`     Cache timeout: ${cacheTimeout > 0 ? `${cacheTimeout} seconds` : 'disabled'}`);
     
     if (USE_POSITIONAL_PARAMS && placeholders.some(p => /^\d+$/.test(p))) {
       const examplePath = placeholders.filter(p => /^\d+$/.test(p)).map(p => `<value${p}>`).join('/');

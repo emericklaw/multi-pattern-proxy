@@ -13,6 +13,8 @@ A **multi-pattern, wildcard-enabled CORS proxy** that dynamically fetches files 
   * Positional parameters with automatic path capture on highest-numbered placeholder
 * **Smart URL encoding:** Preserves path structure while properly encoding individual segments
 * **Placeholder-based URL construction** (`{owner}`, `{repository}`, `{tag}`, `{filename}`, etc.)
+* **File caching system** with configurable timeouts for improved performance
+* **Cache invalidation API** with API key protection
 * **Wildcard and regex allow-lists** for security
 * **CORS support** for browser requests
 * **Comprehensive logging** with configurable log levels
@@ -23,15 +25,25 @@ A **multi-pattern, wildcard-enabled CORS proxy** that dynamically fetches files 
 
 ## Environment Variables
 
-* **`URL_PATTERN`** (required unless `URL_PATTERNS` is supplied): URL pattern
+* **`URL_PATTERN`** (required unless `URL_PATTERNS` is supplied): URL pattern with optional cache timeout
 
-  **Example:** `URL_PATTERN="https://github.com/{owner}/{repository}/releases/download/{tag}/{filename}"`
+  **Format:** `PATTERN|cache:SECONDS` (cache parameter is optional)
 
-* **`URL_PATTERNS`** (required unless `URL_PATTERN` is supplied): Comma-separated list of service patterns
+  **Example:** `URL_PATTERN="https://github.com/{owner}/{repository}/releases/download/{tag}/{filename}|cache:600"`
 
-  **Format:** `SERVICE=PATTERN,SERVICE2=PATTERN2`
+* **`URL_PATTERNS`** (required unless `URL_PATTERN` is supplied): Comma-separated list of service patterns with optional cache timeouts
 
-  **Example:** `URL_PATTERNS="github=https://github.com/{owner}/{repository}/releases/download/{tag}/{filename},gitlab=https://gitlab.com/{owner}/{repository}/-/releases/{tag}/downloads/{filename}"`
+  **Format:** `SERVICE=PATTERN|cache:SECONDS,SERVICE2=PATTERN2|cache:SECONDS`
+
+  **Example:** `URL_PATTERNS="github=https://github.com/{owner}/{repository}/releases/download/{tag}/{filename}|cache:300,gitlab=https://gitlab.com/{owner}/{repository}/-/releases/{tag}/downloads/{filename}|cache:600"`
+
+* **`CACHE_API_KEY`** (optional): API key for cache management endpoints. If not provided, cache invalidation and cleanup endpoints are disabled for security.
+
+  **Example:** `CACHE_API_KEY="your-secret-api-key"`
+
+* **`CACHE_CLEANUP_INTERVAL`** (optional): Interval in seconds for automatic cleanup of expired cache files. Default: `1800` (30 minutes)
+
+  **Example:** `CACHE_CLEANUP_INTERVAL="3600"`  # Clean up every hour
 
 * **`ALLOWED`** (optional): Comma-separated list of allow rules with wildcards (`*`)
 
@@ -140,6 +152,111 @@ The proxy automatically handles URL encoding to ensure proper parameter transmis
 **Examples:**
 * Single file: `my file.txt` → `my%20file.txt`  
 * Path segments: `docs/my file/readme.md` → `docs/my%20file/readme.md`
+
+---
+
+## Caching
+
+The proxy supports file caching to improve performance and reduce load on upstream servers. Caching is enabled per service by adding `|cache=SECONDS` to the URL pattern.
+
+### Cache Configuration
+
+Add cache timeout (in seconds) to any URL pattern:
+
+**Single pattern:**
+```bash
+URL_PATTERN="https://api.example.com/{path}|cache:600"
+```
+
+**Multiple patterns:**
+```bash
+URL_PATTERNS="github=https://github.com/{owner}/{repo}/releases/download/{tag}/{file}|cache:300,api=https://api.example.com/{path}|cache:900"
+```
+
+### Cache Behavior
+
+* **Cache storage**: Files are stored in `/cache/<SERVICE_NAME>/` directory
+* **Cache validation**: Cached files are served if they exist and are within the cache timeout period
+* **Cache headers**: All responses include detailed cache information:
+  - `X-Cache: HIT|MISS|DISABLED` - Cache status
+    - `HIT`: Served from cache
+    - `MISS`: Fetched from upstream but will be cached (if caching enabled)
+    - `DISABLED`: Caching not enabled for this service
+  - `X-Cache-Age: 125` - For HIT: cache age in seconds, For MISS: always 0
+  - `X-Cache-Expires-In: 175` - Time until cache expires (seconds)
+  - `X-Cache-Expires-At: 2026-02-01T15:30:45.123Z` - Absolute expiry timestamp
+  - `Cache-Control: public, max-age=175` - Standard HTTP cache control (or `no-cache` if disabled)
+* **Cache conditions**: Only successful responses (HTTP 200) are cached
+* **Cache naming**: Files are cached using MD5 hash of the target URL
+
+### Cache Management
+
+#### Automatic Cleanup
+The proxy automatically cleans up expired cache files in the background:
+
+* **Cleanup schedule**: Runs periodically to remove expired files (default: every 30 minutes)
+* **Configurable interval**: Set `CACHE_CLEANUP_INTERVAL` environment variable (in seconds)
+* **Automatic start**: Only starts if caching is enabled for at least one service
+
+**Environment Variables:**
+```bash
+CACHE_CLEANUP_INTERVAL="1800"  # Clean up every 30 minutes (default)
+```
+
+#### Manual Cache Invalidation
+Invalidate all cached files for a specific service using the API endpoint (requires `CACHE_API_KEY`):
+
+```bash
+curl -X DELETE "http://localhost:3000/invalidate-cache/<SERVICE_NAME>" \
+  -H "Authorization: Bearer <API_KEY>"
+```
+
+#### Manual Cache Cleanup
+Manually trigger cleanup of expired files across all services (requires `CACHE_API_KEY`):
+
+```bash
+curl -X POST "http://localhost:3000/cleanup-cache" \
+  -H "Authorization: Bearer <API_KEY>"
+```
+
+**Security Note:** If no `CACHE_API_KEY` environment variable is provided, both cache management endpoints are disabled for security. The API key is passed via Authorization header using Bearer token format.
+
+**Environment Variable:**
+```bash
+CACHE_API_KEY="your-secret-api-key"
+```
+
+**Examples:**
+```bash
+# Set API key
+export CACHE_API_KEY="my-secure-key-123"
+
+# Invalidate all cached files for 'github' service
+curl -X DELETE "http://localhost:3000/invalidate-cache/github" \
+  -H "Authorization: Bearer my-secure-key-123"
+
+# Clean up all expired cache files
+curl -X POST "http://localhost:3000/cleanup-cache" \
+  -H "Authorization: Bearer my-secure-key-123"
+```
+
+**Invalidation Response:**
+```json
+{
+  "success": true,
+  "message": "Invalidated 15 cache files for service: github",
+  "deletedFiles": 15
+}
+```
+
+**Cleanup Response:**
+```json
+{
+  "success": true,
+  "message": "Cache cleanup completed: removed 8 expired files",
+  "cleanedFiles": 8
+}
+```
 
 ---
 

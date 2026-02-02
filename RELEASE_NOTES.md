@@ -1,5 +1,62 @@
 # Release Notes
 
+## v1.3.0 - Implement Caching (2026-02-02)
+
+### 🚀 New Features
+
+- **File System Caching**: Intelligent caching system with configurable timeouts to improve performance and reduce upstream load
+- **Per-Service Cache Control**: Individual cache timeout configuration using `|cache:SECONDS` syntax in URL patterns  
+- **Separate File Storage**: Metadata and content stored in separate files for better debugging and maintenance
+- **Cache Management API**: Secure REST endpoints for cache invalidation and cleanup using Bearer token authentication
+- **Automatic Cache Cleanup**: Background scheduler automatically removes expired cache files to keep storage tidy
+- **Cache Headers**: Comprehensive cache timing information in response headers for client optimization
+
+### 🛠️ Improvements
+
+- **Smart Cache Validation**: Files are cached only on successful HTTP 200 responses
+- **Detailed Cache Headers**: Added `X-Cache`, `X-Cache-Age`, `X-Cache-Expires-In`, `X-Cache-Expires-At`, and `Cache-Control` headers
+- **Secure Cache Management**: API endpoints protected by Authorization Bearer tokens, disabled when no API key provided
+- **Cache Directory Structure**: Organized cache storage by service name in `/cache/<SERVICE_NAME>/` directories
+- **Configurable Cleanup**: Customizable cleanup intervals via `CACHE_CLEANUP_INTERVAL` environment variable
+
+### 🔍 Examples
+
+**Cache configuration:**
+```bash
+URL_PATTERNS="github=https://github.com/{owner}/{repo}/releases/download/{tag}/{file}|cache:300,api=https://api.example.com/{path}|cache:600"
+CACHE_API_KEY="your-secret-key"
+CACHE_CLEANUP_INTERVAL="1800"  # 30 minutes
+```
+
+**Cache management:**
+```bash
+# Invalidate cache for specific service
+curl -X DELETE "http://localhost:3000/invalidate-cache/github" \
+  -H "Authorization: Bearer your-secret-key"
+
+# Clean up expired files
+curl -X POST "http://localhost:3000/cleanup-cache" \
+  -H "Authorization: Bearer your-secret-key"
+```
+
+**Cache headers:**
+```
+X-Cache: HIT
+X-Cache-Age: 125
+X-Cache-Expires-In: 175
+X-Cache-Expires-At: 2026-02-02T15:30:45.123Z
+Cache-Control: public, max-age=175
+```
+
+### 📋 Technical Notes
+
+- Cache files use MD5 hash of target URL as filename for deduplication
+- Cache validation checks both content and metadata file existence
+- Background cleanup only runs when caching is enabled for at least one service
+- Cache management endpoints use standard HTTP authentication (Authorization: Bearer)
+- Breaking change: Cache syntax changed from `cache=N` to `cache:N` for better parsing
+
+
 ## v1.2.0 - Enhanced Parameter Handling (2026-01-10)
 
 ### 🚀 New Features
@@ -33,9 +90,6 @@ Result: {2}="images/icons/logo.png"
 - Fully backward compatible - no breaking changes
 - New features are opt-in via `-last` suffix or highest placeholder usage
 
----
-
-**Commit:** `d1485cd` | **Author:** Matt Emerick-Law | **Date:** January 10, 2026
 
 ## v1.1.0 - Positional Parameters & Single Service Mode (2025-09-28)
 
@@ -73,9 +127,6 @@ URL: /owner/facebook/repo/react/tag/v18.2.0
 - Positional mode requires numbered placeholders in URL patterns
 - Single service mode uses catch-all route without `/service/` prefix
 
----
-
-**Commit:** `71e559b` | **Author:** Matt Emerick-Law | **Date:** September 28, 2025
 
 ## v1.0.0 - Initial Release (2025-09-26)
 
@@ -112,7 +163,3 @@ ALLOWED=owner=twbs;repo=bootstrap,owner=facebook;repo=react*
 - Uses named key/value pair URL structure: `/service/<SERVICE>/key/value/key2/value2`
 - Environment variables: `URL_PATTERNS` (required), `ALLOWED` (optional), `LOG_LEVEL` (optional)
 - Default log level: INFO
-
----
-
-**Commit:** `58ce809` | **Author:** Matt Emerick-Law | **Date:** September 26, 2025
