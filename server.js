@@ -15,6 +15,21 @@ const CACHE_API_KEY = process.env.CACHE_API_KEY; // Only use if explicitly provi
 const CACHE_DIR = "/cache";
 const CACHE_CLEANUP_INTERVAL = parseInt(process.env.CACHE_CLEANUP_INTERVAL || "1800", 10); // Default: 30 minutes (1800 seconds)
 
+// Access log configuration
+const ACCESS_LOG_FILE_JSON = process.env.ACCESS_LOG_FILE_JSON || null;
+const ACCESS_LOG_FILE_TEXT = process.env.ACCESS_LOG_FILE_TEXT || null;
+
+function openLogStream(filePath, label) {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const stream = fs.createWriteStream(filePath, { flags: "a" });
+  stream.on("error", (err) => logError(`${label} write error: ${err.message}`));
+  return stream;
+}
+
+let accessLogStream = ACCESS_LOG_FILE_JSON ? openLogStream(ACCESS_LOG_FILE_JSON, "Access log (JSON)") : null;
+let accessLogTextStream = ACCESS_LOG_FILE_TEXT ? openLogStream(ACCESS_LOG_FILE_TEXT, "Access log (text)") : null;
+
 // Logging functions
 function getTimestamp() {
   return new Date().toISOString();
@@ -40,12 +55,50 @@ function logError(...args) {
   if (currentLogLevel <= logLevels.ERROR) console.error(`[${getTimestamp()}] [ERROR]`, ...args);
 }
 
+function writeAccessLog(entry) {
+  if (accessLogStream) {
+    try {
+      accessLogStream.write(JSON.stringify(entry) + "\n");
+    } catch (err) {
+      logError(`Failed to write JSON access log entry: ${err.message}`);
+    }
+  }
+  if (accessLogTextStream) {
+    try {
+      const { timestamp, method, path: reqPath, ip, status, durationMs, service = "-", targetUrl = "-", bytes = "-", cache = "-" } = entry;
+      const line = `[${timestamp}] ${status} ${method} ${reqPath} ${ip} ${bytes}B ${durationMs}ms cache=${cache} service=${service} target=${targetUrl}\n`;
+      accessLogTextStream.write(line);
+    } catch (err) {
+      logError(`Failed to write text access log entry: ${err.message}`);
+    }
+  }
+}
+
 // Add request logging middleware
 app.use((req, res, next) => {
   logInfo(`${req.method} ${req.url}`);
   logTrace(`Request headers:`, req.headers);
   logDebug(`Request path: ${req.path}`);
   logDebug(`Request params:`, req.params);
+
+  if (accessLogStream || accessLogTextStream) {
+    req._startTime = Date.now();
+    req._clientIp = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || "";
+    res.on("finish", () => {
+      const durationMs = Date.now() - req._startTime;
+      const entry = {
+        timestamp: new Date(req._startTime).toISOString(),
+        method: req.method,
+        path: req.originalUrl || req.url,
+        ip: req._clientIp,
+        status: res.statusCode,
+        durationMs,
+        ...(res.locals.accessLog || {}),
+      };
+      writeAccessLog(entry);
+    });
+  }
+
   next();
 });
 
@@ -81,9 +134,11 @@ if (URL_PATTERNS_ENV) {
 
 // Parse cache timeouts for each pattern
 const CACHE_TIMEOUTS = {};
+const CHUNKED_SIZES = {};
 for (const [service, pattern] of Object.entries(URL_PATTERNS)) {
   CACHE_TIMEOUTS[service] = parseCacheTimeout(pattern);
-  URL_PATTERNS[service] = removeCacheFlag(pattern);
+  CHUNKED_SIZES[service] = parseChunkedSize(pattern);
+  URL_PATTERNS[service] = removeConfigFlags(pattern);
 }
 
 // Parse ALLOWED rules with wildcard regex
@@ -148,9 +203,15 @@ function readCacheFile(cacheFilePaths) {
   }
 }
 
-function writeCacheFile(cacheFilePaths, content, contentType) {
+function writeCacheFile(cacheFilePaths, content, contentType, originalHeaders = {}, proxiedUrl = '', requestUrl = '') {
   try {
-    const metadata = { contentType, timestamp: Date.now() };
+    const metadata = { 
+      proxiedUrl: proxiedUrl,
+      requestUrl: requestUrl,
+      contentType, 
+      timestamp: Date.now(),
+      originalHeaders: originalHeaders
+    };
     fs.writeFileSync(cacheFilePaths.metadata, JSON.stringify(metadata, null, 2));
     fs.writeFileSync(cacheFilePaths.content, content);
     logDebug(`📁 Cached files: ${cacheFilePaths.content} and ${cacheFilePaths.metadata}`);
@@ -167,8 +228,16 @@ function parseCacheTimeout(pattern) {
   return 0; // No caching
 }
 
-function removeCacheFlag(pattern) {
-  return pattern.replace(/\|cache:\d+/, '');
+function parseChunkedSize(pattern) {
+  const chunkedMatch = pattern.match(/\|chunked_size:(\d+)/);
+  if (chunkedMatch) {
+    return parseInt(chunkedMatch[1], 10);
+  }
+  return 0; // No chunking
+}
+
+function removeConfigFlags(pattern) {
+  return pattern.replace(/\|cache:\d+/, '').replace(/\|chunked_size:\d+/, '');
 }
 
 // Cache cleanup functions
@@ -257,6 +326,30 @@ function startCacheCleanupScheduler() {
   }, 5 * 60 * 1000); // 5 minutes delay for initial cleanup
   
   logInfo(`⏰ Cache cleanup scheduler started (runs every ${CACHE_CLEANUP_INTERVAL / 60} minutes)`);
+}
+
+// Helper function to send chunked response
+function sendChunkedResponse(res, buffer, chunkSize) {
+  res.setHeader('Transfer-Encoding', 'chunked');
+  
+  let offset = 0;
+  
+  function sendNextChunk() {
+    if (offset >= buffer.length) {
+      res.end(); // End the response
+      return;
+    }
+    
+    const chunk = buffer.slice(offset, offset + chunkSize);
+    offset += chunkSize;
+    
+    res.write(chunk);
+    
+    // Schedule next chunk asynchronously
+    setImmediate(sendNextChunk);
+  }
+  
+  sendNextChunk();
 }
 
 // Helper: validate required placeholders
@@ -373,7 +466,9 @@ async function processRequest(req, res, service, segments) {
   logDebug(`🎯 Target URL: ${targetUrl}`);
 
   const cacheTimeout = CACHE_TIMEOUTS[service];
+  const chunkedSize = CHUNKED_SIZES[service];
   const useCache = cacheTimeout > 0;
+  const useChunking = chunkedSize > 0;
   
   // Check cache first if caching is enabled
   if (useCache) {
@@ -391,12 +486,15 @@ async function processRequest(req, res, service, segments) {
         
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("Content-Type", cached.metadata.contentType || "application/octet-stream");
+        
+        // Set cache-specific headers
         res.setHeader("X-Cache", "HIT");
         res.setHeader("X-Cache-Age", cacheAgeSeconds.toString());
         res.setHeader("X-Cache-Expires-In", cacheExpiresInSeconds.toString());
         res.setHeader("X-Cache-Expires-At", cacheExpiresAt.toISOString());
         res.setHeader("Cache-Control", `public, max-age=${cacheExpiresInSeconds}`);
-        
+
+        // Set content-length for the cached content size
         if (params.filename) {
           res.setHeader(
             "Content-Disposition",
@@ -404,8 +502,23 @@ async function processRequest(req, res, service, segments) {
           );
         }
         
-        logInfo(`✅ Served ${service} request from cache: ${cached.content.length} bytes (age: ${cacheAgeSeconds}s, expires in: ${cacheExpiresInSeconds}s)`);
-        return res.send(cached.content);
+        // Send response with or without chunking
+        res.locals.accessLog = {
+          service,
+          params,
+          targetUrl: cached.metadata.proxiedUrl || "",
+          bytes: cached.content.length,
+          cache: "HIT",
+        };
+        if (useChunking) {
+          logInfo(`✅ Served ${service} request from cache with chunking: ${cached.content.length} bytes (age: ${cacheAgeSeconds}s, chunk size: ${chunkedSize})`);
+          sendChunkedResponse(res, cached.content, chunkedSize);
+        } else {
+          res.setHeader("Content-Length", cached.content.length.toString());
+          logInfo(`✅ Served ${service} request from cache: ${cached.content.length} bytes (age: ${cacheAgeSeconds}s, expires in: ${cacheExpiresInSeconds}s)`);
+          res.send(cached.content);
+        }
+        return;
       }
     }
   }
@@ -424,14 +537,29 @@ async function processRequest(req, res, service, segments) {
     const contentType = response.headers.get("content-type") || "application/octet-stream";
     logDebug(`✅ Successfully fetched ${buffer.length} bytes`);
     
+    // Capture original headers for caching and forwarding
+    const originalHeaders = {};
+    for (const [key, value] of response.headers) {
+      originalHeaders[key] = value;
+    }
+    
     // Cache the response if caching is enabled and response is 200
     if (useCache && response.status === 200) {
       const cacheKey = generateCacheKey(targetUrl, params);
       const cacheFilePaths = getCacheFilePaths(service, cacheKey);
-      writeCacheFile(cacheFilePaths, buffer, contentType);
+      const requestUrl = req.originalUrl || req.url;
+      writeCacheFile(cacheFilePaths, buffer, contentType, originalHeaders, targetUrl, requestUrl);
     }
     
     logInfo(`✅ Served ${service} request: ${buffer.length} bytes`);
+
+    res.locals.accessLog = {
+      service,
+      params,
+      targetUrl,
+      bytes: buffer.length,
+      cache: useCache ? "MISS" : "DISABLED",
+    };
     
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Content-Type", contentType);
@@ -447,7 +575,7 @@ async function processRequest(req, res, service, segments) {
       res.setHeader("X-Cache", "DISABLED");
       res.setHeader("Cache-Control", "no-cache");
     }
-
+    
     if (params.filename) {
       res.setHeader(
         "Content-Disposition",
@@ -455,7 +583,14 @@ async function processRequest(req, res, service, segments) {
       );
     }
 
-    res.send(buffer);
+    // Send response with or without chunking
+    if (useChunking) {
+      logInfo(`📦 Sending chunked response: ${buffer.length} bytes in ${chunkedSize} byte chunks`);
+      sendChunkedResponse(res, buffer, chunkedSize);
+    } else {
+      res.setHeader("Content-Length", buffer.length.toString());
+      res.send(buffer);
+    }
   } catch (err) {
     logError(`💥 Error fetching target: ${err.message}`);
     res.status(500).json({ error: "Failed to fetch target" });
@@ -593,6 +728,15 @@ if (CACHE_API_KEY) {
 app.listen(3000, () => {
   logInfo("✅ Proxy running on port 3000");
   logInfo(`📊 Log level: ${LOG_LEVEL}`);
+  if (ACCESS_LOG_FILE_JSON) {
+    logInfo(`📝 Access log (JSON): ${ACCESS_LOG_FILE_JSON}`);
+  }
+  if (ACCESS_LOG_FILE_TEXT) {
+    logInfo(`📝 Access log (text): ${ACCESS_LOG_FILE_TEXT}`);
+  }
+  if (!ACCESS_LOG_FILE_JSON && !ACCESS_LOG_FILE_TEXT) {
+    logInfo("📝 Access log: disabled (set ACCESS_LOG_FILE_JSON or ACCESS_LOG_FILE_TEXT to enable)");
+  }
   logInfo(`🔢 Parameter mode: ${USE_POSITIONAL_PARAMS ? 'Positional ({1}, {2}, {3}, ...)' : 'Named (key/value pairs)'}`);
   logInfo(`💾 Cache directory: ${CACHE_DIR}`);
   
@@ -617,10 +761,12 @@ app.listen(3000, () => {
   for (const [service, pattern] of Object.entries(URL_PATTERNS)) {
     const placeholders = [...pattern.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
     const cacheTimeout = CACHE_TIMEOUTS[service];
+    const chunkedSize = CHUNKED_SIZES[service];
     logInfo(`  🔸 ${service}:`);
     logInfo(`     URL pattern: ${pattern}`);
     logInfo(`     Parameters: ${placeholders.length > 0 ? placeholders.join(', ') : 'none'}`);
     logInfo(`     Cache timeout: ${cacheTimeout > 0 ? `${cacheTimeout} seconds` : 'disabled'}`);
+    logInfo(`     Chunked size: ${chunkedSize > 0 ? `${chunkedSize} bytes` : 'disabled'}`);
     
     if (USE_POSITIONAL_PARAMS && placeholders.some(p => /^\d+$/.test(p))) {
       const examplePath = placeholders.filter(p => /^\d+$/.test(p)).map(p => `<value${p}>`).join('/');

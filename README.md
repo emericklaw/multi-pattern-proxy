@@ -14,10 +14,14 @@ A **multi-pattern, wildcard-enabled CORS proxy** that dynamically fetches files 
 * **Smart URL encoding:** Preserves path structure while properly encoding individual segments
 * **Placeholder-based URL construction** (`{owner}`, `{repository}`, `{tag}`, `{filename}`, etc.)
 * **File caching system** with configurable timeouts for improved performance
+* **Enhanced cache metadata** with request URLs, proxied URLs, and original headers
+* **Chunked transfer encoding** with configurable chunk sizes for large file streaming
+* **Header forwarding** with automatic content-length calculation
 * **Cache invalidation API** with API key protection
 * **Wildcard and regex allow-lists** for security
 * **CORS support** for browser requests
 * **Comprehensive logging** with configurable log levels
+* **Access logging** to JSON and/or plain-text files for analytics and download graphs
 * **Dockerized** for easy deployment
 * **Path-based parameters** (`/service/.../key/value/...`)
 
@@ -25,17 +29,17 @@ A **multi-pattern, wildcard-enabled CORS proxy** that dynamically fetches files 
 
 ## Environment Variables
 
-* **`URL_PATTERN`** (required unless `URL_PATTERNS` is supplied): URL pattern with optional cache timeout
+* **`URL_PATTERN`** (required unless `URL_PATTERNS` is supplied): URL pattern with optional cache timeout and chunked response size
 
-  **Format:** `PATTERN|cache:SECONDS` (cache parameter is optional)
+  **Format:** `PATTERN|cache:SECONDS|chunked_size:BYTES` (both cache and chunked_size parameters are optional)
 
-  **Example:** `URL_PATTERN="https://github.com/{owner}/{repository}/releases/download/{tag}/{filename}|cache:600"`
+  **Example:** `URL_PATTERN="https://github.com/{owner}/{repository}/releases/download/{tag}/{filename}|cache:600|chunked_size:32768"`
 
-* **`URL_PATTERNS`** (required unless `URL_PATTERN` is supplied): Comma-separated list of service patterns with optional cache timeouts
+* **`URL_PATTERNS`** (required unless `URL_PATTERN` is supplied): Comma-separated list of service patterns with optional cache timeouts and chunked response sizes
 
-  **Format:** `SERVICE=PATTERN|cache:SECONDS,SERVICE2=PATTERN2|cache:SECONDS`
+  **Format:** `SERVICE=PATTERN|cache:SECONDS|chunked_size:BYTES,SERVICE2=PATTERN2|cache:SECONDS|chunked_size:BYTES`
 
-  **Example:** `URL_PATTERNS="github=https://github.com/{owner}/{repository}/releases/download/{tag}/{filename}|cache:300,gitlab=https://gitlab.com/{owner}/{repository}/-/releases/{tag}/downloads/{filename}|cache:600"`
+  **Example:** `URL_PATTERNS="github=https://github.com/{owner}/{repository}/releases/download/{tag}/{filename}|cache:300|chunked_size:16384,gitlab=https://gitlab.com/{owner}/{repository}/-/releases/{tag}/downloads/{filename}|cache:600|chunked_size:32768"`
 
 * **`CACHE_API_KEY`** (optional): API key for cache management endpoints. If not provided, cache invalidation and cleanup endpoints are disabled for security.
 
@@ -44,6 +48,45 @@ A **multi-pattern, wildcard-enabled CORS proxy** that dynamically fetches files 
 * **`CACHE_CLEANUP_INTERVAL`** (optional): Interval in seconds for automatic cleanup of expired cache files. Default: `1800` (30 minutes)
 
   **Example:** `CACHE_CLEANUP_INTERVAL="3600"`  # Clean up every hour
+
+* **`ACCESS_LOG_FILE_JSON`** (optional): Path to a file where one **JSON** line per request is appended. The directory is created automatically. When not set, JSON access logging is disabled.
+
+  **Example:** `ACCESS_LOG_FILE_JSON="/logs/access.log"`
+
+  Each line is a JSON object with these fields:
+
+  | Field | Description |
+  |---|---|
+  | `timestamp` | ISO 8601 request start time |
+  | `method` | HTTP method (`GET`, etc.) |
+  | `path` | Full request path including query string |
+  | `ip` | Client IP (honours `X-Forwarded-For`) |
+  | `status` | HTTP response status code |
+  | `durationMs` | Request duration in milliseconds |
+  | `service` | Matched service name |
+  | `params` | Parsed URL parameters |
+  | `targetUrl` | Upstream URL fetched |
+  | `bytes` | Response size in bytes |
+  | `cache` | `HIT`, `MISS`, or `DISABLED` |
+
+  ```json
+  {"timestamp":"2026-04-12T16:48:11.710Z","method":"GET","path":"/service/github/1.14/Bruce-CYD-2432S028.bin","ip":"192.168.1.10","status":200,"durationMs":234,"service":"github","params":{"1":"1.14","2":"Bruce-CYD-2432S028.bin"},"targetUrl":"https://github.com/...","bytes":123456,"cache":"MISS"}
+  ```
+
+* **`ACCESS_LOG_FILE_TEXT`** (optional): Path to a file where one **plain-text** line per request is appended. The directory is created automatically. When not set, text access logging is disabled.
+
+  **Example:** `ACCESS_LOG_FILE_TEXT="/logs/access.txt"`
+
+  Each line has the format:
+  ```
+  [TIMESTAMP] STATUS METHOD PATH IP BYTESb DURATIONms cache=CACHE service=SERVICE target=TARGETURL
+  ```
+
+  ```
+  [2026-04-12T16:48:11.710Z] 200 GET /service/github/1.14/Bruce-CYD-2432S028.bin 192.168.1.10 123456B 234ms cache=MISS service=github target=https://github.com/...
+  ```
+
+  Both log files can be enabled simultaneously — JSON for programmatic parsing, text for quick `grep`/`tail` inspection.
 
 * **`ALLOWED`** (optional): Comma-separated list of allow rules with wildcards (`*`)
 
@@ -261,6 +304,66 @@ curl -X POST "http://localhost:3000/cleanup-cache" \
 
 ---
 
+## Access Logging
+
+The proxy can write an access log entry for every request, independently of the stdout application log. Both formats append to their file and create the directory automatically on startup.
+
+### JSON log (`ACCESS_LOG_FILE_JSON`)
+
+One compact JSON object per line (NDJSON). Ideal for ingestion into log aggregators, `jq` queries, or graphing tools:
+
+```bash
+ACCESS_LOG_FILE_JSON="/logs/access.log"
+```
+
+```json
+{"timestamp":"2026-04-12T16:48:11.710Z","method":"GET","path":"/service/github/1.1/file.txt","ip":"192.168.1.10","status":200,"durationMs":234,"service":"github","params":{"1":"1.1","2":"file.text"},"targetUrl":"https://github.com/owner/repo/releases/download/1.11/file.text","bytes":123456,"cache":"MISS"}
+```
+
+**Useful `jq` queries:**
+```bash
+# Count downloads per filename
+jq -r '.params["2"]' access.log | sort | uniq -c | sort -rn
+
+# Total bytes served today
+jq -r 'select(.timestamp | startswith("2026-04-12")) | .bytes' access.log | awk '{s+=$1} END {print s}'
+
+# All cache HITs
+jq 'select(.cache == "HIT")' access.log
+```
+
+### Text log (`ACCESS_LOG_FILE_TEXT`)
+
+One human-readable line per request. Ideal for quick `grep`/`tail` inspection:
+
+```bash
+ACCESS_LOG_FILE_TEXT="/logs/access.txt"
+```
+
+```
+[2026-04-12T16:48:11.710Z] 200 GET /service/github/1.1/file.txt 192.168.1.10 123456B 234ms cache=MISS service=github target=https://github.com/owner/repo/releases/download/1.1/file.txt
+[2026-04-12T16:49:02.001Z] 200 GET /service/github/1.1/file.txt 10.0.0.5 123456B 3ms cache=HIT service=github target=https://github.com/owner/repo/releases/download/1.1/file.txt
+```
+
+### Docker Compose example with both logs
+
+```yaml
+services:
+  proxy:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      URL_PATTERNS: "github=https://github.com/{1}/{2}/releases/download/{3}/{4}|cache:300"
+      USE_POSITIONAL_PARAMS: "true"
+      ACCESS_LOG_FILE_JSON: /logs/access.log
+      ACCESS_LOG_FILE_TEXT: /logs/access.txt
+    volumes:
+      - ./logs:/logs
+```
+
+---
+
 ## Docker Usage
 
 ### Build the Docker Image
@@ -346,6 +449,48 @@ docker-compose up -d
 
 ---
 
+## Cache Features
+
+### Cache Metadata
+
+Each cached response includes comprehensive metadata stored in `.meta` files:
+
+* **`contentType`**: Original response content type
+* **`timestamp`**: Cache creation time
+* **`originalHeaders`**: Complete upstream response headers
+* **`proxiedUrl`**: The actual target URL fetched from upstream
+* **`requestUrl`**: The original client request URL to the proxy
+
+### Response Headers
+
+* **`Content-Length`**: Automatically calculated based on actual response content (when not using chunking)
+* **`Transfer-Encoding: chunked`**: Used when chunked_size is configured for streaming responses
+* **`X-Cache`**: Cache status (HIT, MISS, or DISABLED)
+* **`X-Cache-Age`**: Age of cached content in seconds
+* **`X-Cache-Expires-In`**: Seconds until cache expiration
+* **`X-Cache-Expires-At`**: ISO timestamp of cache expiration
+* **`Cache-Control`**: Standard HTTP caching directives
+
+### Chunked Transfer Encoding
+
+For large files or streaming scenarios, you can enable chunked transfer encoding:
+
+```bash
+# Enable 32KB chunks for large file downloads
+URL_PATTERNS="downloads=https://cdn.example.com/{file}|cache:3600|chunked_size:32768"
+
+# Different chunk sizes for different services
+URL_PATTERNS="small=https://api.example.com/{path}|chunked_size:8192,large=https://files.example.com/{file}|chunked_size:65536"
+```
+
+**Benefits:**
+- Reduces memory usage for large files
+- Enables streaming of responses
+- Better performance for bandwidth-limited scenarios
+- Works with both cached and fresh responses
+
+---
+
 ## Development
 
 Install dependencies:
@@ -378,3 +523,6 @@ Run normally:
 * **Logging:**
   * Set `LOG_LEVEL=TRACE` to see detailed request processing information
   * Request and response details are logged at appropriate levels
+  * Set `ACCESS_LOG_FILE_JSON` for a per-request JSON access log (useful for download analytics)
+  * Set `ACCESS_LOG_FILE_TEXT` for a per-request plain-text access log (useful for quick inspection)
+  * Both access log formats can be enabled simultaneously

@@ -1,5 +1,68 @@
 # Release Notes
 
+## v1.4.0 - Access Logging & Chunked Transfer Encoding (2026-04-12)
+
+### 🚀 New Features
+
+- **JSON Access Log**: Per-request access log written as NDJSON (one JSON object per line) via the `ACCESS_LOG_FILE_JSON` environment variable. Captures timestamp, method, path, client IP, HTTP status, duration, service, parsed parameters, upstream target URL, response bytes, and cache status (`HIT`/`MISS`/`DISABLED`). Ideal for feeding into log aggregators or graphing tools.
+- **Plain-Text Access Log**: Human-readable single-line access log via the `ACCESS_LOG_FILE_TEXT` environment variable. Format: `[TIMESTAMP] STATUS METHOD PATH IP BYTESb DURATIONms cache=CACHE service=SERVICE target=URL`. Ideal for quick `grep`/`tail` inspection.
+- **Dual Access Logging**: Both log formats are fully independent and can be enabled simultaneously.
+- **Chunked Transfer Encoding**: Stream large files in configurable chunks using `|chunked_size:BYTES` in URL patterns. Reduces memory pressure and improves performance for large file downloads. Works with both cached and freshly fetched responses.
+
+### 🛠️ Improvements
+
+- **Richer Cache Metadata**: Cache `.meta` files now store the original proxied URL (`proxiedUrl`), the client request URL (`requestUrl`), and the full set of upstream response headers (`originalHeaders`) for improved debugging and cache introspection.
+- **Automatic Log Directory Creation**: Access log directories are created automatically on startup if they do not exist.
+- **`X-Forwarded-For` Support**: Client IP in access logs correctly uses the `X-Forwarded-For` header when the proxy is behind a load balancer or reverse proxy.
+
+### 🔍 Examples
+
+**JSON access log line:**
+```json
+{"timestamp":"2026-04-12T16:48:11.710Z","method":"GET","path":"/service/github/1.14/Bruce-CYD-2432S028.bin","ip":"192.168.1.10","status":200,"durationMs":234,"service":"github","params":{"1":"1.14","2":"Bruce-CYD-2432S028.bin"},"targetUrl":"https://github.com/owner/repo/releases/download/1.14/Bruce-CYD-2432S028.bin","bytes":123456,"cache":"MISS"}
+```
+
+**Plain-text access log line:**
+```
+[2026-04-12T16:48:11.710Z] 200 GET /service/github/1.14/Bruce-CYD-2432S028.bin 192.168.1.10 123456B 234ms cache=MISS service=github target=https://github.com/owner/repo/releases/download/1.14/Bruce-CYD-2432S028.bin
+```
+
+**Chunked transfer encoding:**
+```bash
+URL_PATTERNS="downloads=https://cdn.example.com/{1}|cache:3600|chunked_size:32768"
+```
+
+**Docker Compose with both access logs:**
+```yaml
+environment:
+  ACCESS_LOG_FILE_JSON: /logs/access.log
+  ACCESS_LOG_FILE_TEXT: /logs/access.txt
+volumes:
+  - ./logs:/logs
+```
+
+**Useful `jq` queries on the JSON log:**
+```bash
+# Download count per filename
+jq -r '.params["2"]' access.log | sort | uniq -c | sort -rn
+
+# Total bytes served
+jq -r '.bytes' access.log | awk '{s+=$1} END {print s}'
+
+# Cache hit rate
+jq -r '.cache' access.log | sort | uniq -c
+```
+
+### 📋 Technical Notes
+
+- Access log streams are opened in append mode (`a`) at startup; any missing parent directories are created automatically
+- Stream write errors are reported to the application log without crashing the server
+- Chunked responses use `setImmediate` between chunks to avoid blocking the event loop
+- The `chunked_size` flag is stripped from the URL pattern before upstream URL construction (alongside the existing `cache` flag)
+- Cache metadata schema extended: existing `.meta` files written by v1.3.0 remain readable; new fields (`proxiedUrl`, `requestUrl`, `originalHeaders`) default gracefully when absent
+
+---
+
 ## v1.3.0 - Implement Caching (2026-02-02)
 
 ### 🚀 New Features
