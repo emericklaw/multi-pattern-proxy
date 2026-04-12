@@ -66,7 +66,8 @@ function writeAccessLog(entry) {
   if (accessLogTextStream) {
     try {
       const { timestamp, method, path: reqPath, ip, status, durationMs, service = "-", targetUrl = "-", bytes = "-", cache = "-" } = entry;
-      const line = `[${timestamp}] ${status} ${method} ${reqPath} ${ip} ${bytes}B ${durationMs}ms cache=${cache} service=${service} target=${targetUrl}\n`;
+      const clean = (v) => String(v).replace(/[\r\n]+/g, "");
+      const line = `[${clean(timestamp)}] ${clean(status)} ${clean(method)} ${clean(reqPath)} ${clean(ip)} ${clean(bytes)}B ${clean(durationMs)}ms cache=${clean(cache)} service=${clean(service)} target=${clean(targetUrl)}\n`;
       accessLogTextStream.write(line);
     } catch (err) {
       logError(`Failed to write text access log entry: ${err.message}`);
