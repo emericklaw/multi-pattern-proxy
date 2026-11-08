@@ -1,5 +1,13 @@
 # Release Notes
 
+## v1.5.0 - Fallback Content-Disposition Filename (2026-11-08)
+
+### 🛠️ Improvements
+
+- **Automatic Filename Fallback**: When a URL pattern doesn't include a `{filename}` placeholder (e.g. a fixed, filename-less pattern), the proxy now derives a sensible filename from the last path segment of the resolved upstream URL and uses it for the `Content-Disposition` header. Previously, downloads from such patterns would omit `Content-Disposition` entirely, causing browsers to present the file to the end user with a random/generated name instead of the real filename. This applies to both freshly fetched and cached responses.
+
+---
+
 ## v1.4.0 - Access Logging & Chunked Transfer Encoding (2026-04-12)
 
 ### 🚀 New Features
