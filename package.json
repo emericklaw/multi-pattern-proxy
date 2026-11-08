@@ -1,6 +1,6 @@
 {
   "name": "multi-pattern-proxy",
-  "version": "1.0.0",
+  "version": "1.5.0",
   "description": "A multi-pattern proxy with placeholder-based URL patterns, wildcard allow-list, and CORS support",
   "main": "server.js",
   "type": "module",
