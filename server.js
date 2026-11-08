@@ -378,6 +378,21 @@ function buildUrl(pattern, params) {
   });
 }
 
+// Helper: derive a sensible filename from the last path segment of a URL.
+// Used as a fallback for Content-Disposition when the request doesn't
+// supply an explicit {filename} parameter (e.g. fixed URL_PATTERNS entries
+// with no placeholders at all).
+function deriveFilenameFromUrl(url) {
+  try {
+    const pathname = new URL(url).pathname;
+    const lastSegment = pathname.split('/').filter(Boolean).pop();
+    if (!lastSegment) return null;
+    return decodeURIComponent(lastSegment);
+  } catch (err) {
+    return null;
+  }
+}
+
 // Helper: check if request matches allow list
 function isAllowed(params) {
   if (ALLOWED.length === 0) return true;
@@ -496,10 +511,11 @@ async function processRequest(req, res, service, segments) {
         res.setHeader("Cache-Control", `public, max-age=${cacheExpiresInSeconds}`);
 
         // Set content-length for the cached content size
-        if (params.filename) {
+        const cachedFilename = params.filename || deriveFilenameFromUrl(cached.metadata.proxiedUrl || "");
+        if (cachedFilename) {
           res.setHeader(
             "Content-Disposition",
-            `attachment; filename="${params.filename}"`
+            `attachment; filename="${cachedFilename}"`
           );
         }
         
@@ -577,10 +593,11 @@ async function processRequest(req, res, service, segments) {
       res.setHeader("Cache-Control", "no-cache");
     }
     
-    if (params.filename) {
+    const responseFilename = params.filename || deriveFilenameFromUrl(targetUrl);
+    if (responseFilename) {
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename="${params.filename}"`
+        `attachment; filename="${responseFilename}"`
       );
     }
 
