@@ -19,7 +19,7 @@
 
 ---
 
-## v1.5.0 - Fallback Content-Disposition Filename (2026-11-08)
+## v1.5 - Fallback Content-Disposition Filename (2026-11-08)
 
 ### 🛠️ Improvements
 
@@ -27,7 +27,7 @@
 
 ---
 
-## v1.4.0 - Access Logging & Chunked Transfer Encoding (2026-04-12)
+## v1.4 - Access Logging & Chunked Transfer Encoding (2026-04-12)
 
 ### 🚀 New Features
 
@@ -90,7 +90,7 @@ jq -r '.cache' access.log | sort | uniq -c
 
 ---
 
-## v1.3.0 - Implement Caching (2026-02-02)
+## v1.3 - Implement Caching (2026-02-02)
 
 ### 🚀 New Features
 
@@ -147,7 +147,7 @@ Cache-Control: public, max-age=175
 - Breaking change: Cache syntax changed from `cache=N` to `cache:N` for better parsing
 
 
-## v1.2.0 - Enhanced Parameter Handling (2026-01-10)
+## v1.2 - Enhanced Parameter Handling (2026-01-10)
 
 ### 🚀 New Features
 
@@ -181,7 +181,7 @@ Result: {2}="images/icons/logo.png"
 - New features are opt-in via `-last` suffix or highest placeholder usage
 
 
-## v1.1.0 - Positional Parameters & Single Service Mode (2025-09-28)
+## v1.1 - Positional Parameters & Single Service Mode (2025-09-28)
 
 ### 🚀 New Features
 
@@ -218,7 +218,7 @@ URL: /owner/facebook/repo/react/tag/v18.2.0
 - Single service mode uses catch-all route without `/service/` prefix
 
 
-## v1.0.0 - Initial Release (2025-09-26)
+## v1.0 - Initial Release (2025-09-26)
 
 ### 🚀 New Features
 
