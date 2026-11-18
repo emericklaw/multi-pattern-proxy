@@ -769,12 +769,13 @@ app.listen(3000, () => {
     logInfo(`🔐 Cache management API key: ${CACHE_API_KEY.slice(0, 4)}***`);
     logInfo("🔧 Cache management endpoints enabled");
     logInfo("🗑️  Cache invalidation URLs:");
+    const maskedApiKey = `${CACHE_API_KEY.slice(0, 4)}***`;
     for (const service of Object.keys(URL_PATTERNS)) {
       logInfo(`     DELETE /invalidate-cache/${service}`);
-      logInfo(`     curl -X DELETE http://localhost:3000/invalidate-cache/${service} -H "Authorization: Bearer ${CACHE_API_KEY}"`);
+      logInfo(`     curl -X DELETE http://localhost:3000/invalidate-cache/${service} -H "Authorization: Bearer ${maskedApiKey}"`);
     }
     logInfo("     POST /cleanup-cache");
-    logInfo(`     curl -X POST http://localhost:3000/cleanup-cache -H "Authorization: Bearer ${CACHE_API_KEY}"`);
+    logInfo(`     curl -X POST http://localhost:3000/cleanup-cache -H "Authorization: Bearer ${maskedApiKey}"`);
   } else {
     logInfo("🚫 Cache management disabled (no CACHE_API_KEY provided)");
   }

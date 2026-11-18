@@ -1,6 +1,6 @@
 # Release Notes
 
-## v1.5.1 - Startup Diagnostics & Version Reporting (2026-11-18)
+## v1.6 - Startup Diagnostics & Version Reporting (2026-11-18)
 
 ### 🚀 New Features
 
@@ -10,6 +10,7 @@
 ### 🛠️ Improvements
 
 - **Cache Invalidation URL Logging**: On startup, when `CACHE_API_KEY` is set, the server now logs the full list of available `DELETE /invalidate-cache/<service>` URLs (one per configured service, including `DEFAULT` in single `URL_PATTERN` mode) alongside the `POST /cleanup-cache` endpoint, making cache management endpoints easier to discover without reading source code.
+- **Ready-to-Run `curl` Examples**: Startup logs now include complete `curl` commands for each `invalidate-cache` and `cleanup-cache` endpoint (with the API key masked as `XXXX***`, matching the existing masked key log line) so the correct syntax is easy to copy and adapt for testing without exposing the full secret in logs.
 
 ### 📋 Technical Notes
 
