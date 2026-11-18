@@ -764,6 +764,11 @@ app.listen(3000, () => {
   if (CACHE_API_KEY) {
     logInfo(`🔐 Cache management API key: ${CACHE_API_KEY.slice(0, 4)}***`);
     logInfo("🔧 Cache management endpoints enabled");
+    logInfo("🗑️  Cache invalidation URLs:");
+    for (const service of Object.keys(URL_PATTERNS)) {
+      logInfo(`     DELETE /invalidate-cache/${service}`);
+    }
+    logInfo("     POST /cleanup-cache");
   } else {
     logInfo("🚫 Cache management disabled (no CACHE_API_KEY provided)");
   }
