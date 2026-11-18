@@ -771,8 +771,10 @@ app.listen(3000, () => {
     logInfo("🗑️  Cache invalidation URLs:");
     for (const service of Object.keys(URL_PATTERNS)) {
       logInfo(`     DELETE /invalidate-cache/${service}`);
+      logInfo(`     curl -X DELETE http://localhost:3000/invalidate-cache/${service} -H "Authorization: Bearer ${CACHE_API_KEY}"`);
     }
     logInfo("     POST /cleanup-cache");
+    logInfo(`     curl -X POST http://localhost:3000/cleanup-cache -H "Authorization: Bearer ${CACHE_API_KEY}"`);
   } else {
     logInfo("🚫 Cache management disabled (no CACHE_API_KEY provided)");
   }
