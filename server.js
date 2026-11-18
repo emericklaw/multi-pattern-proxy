@@ -10,6 +10,9 @@ const LOG_LEVEL = (process.env.LOG_LEVEL || "INFO").toUpperCase();
 const logLevels = { TRACE: 0, DEBUG: 1, INFO: 2, WARN: 3, ERROR: 4 };
 const currentLogLevel = logLevels[LOG_LEVEL] ?? logLevels.INFO;
 
+// App version: set to the GitHub release tag by the build workflow, defaults to DEV locally
+const APP_VERSION = process.env.APP_VERSION || "DEV";
+
 // Parse cache-related environment variables
 const CACHE_API_KEY = process.env.CACHE_API_KEY; // Only use if explicitly provided
 const CACHE_DIR = "/cache";
@@ -745,6 +748,7 @@ if (CACHE_API_KEY) {
 
 app.listen(3000, () => {
   logInfo("✅ Proxy running on port 3000");
+  logInfo(`🏷️  Version: ${APP_VERSION}`);
   logInfo(`📊 Log level: ${LOG_LEVEL}`);
   if (ACCESS_LOG_FILE_JSON) {
     logInfo(`📝 Access log (JSON): ${ACCESS_LOG_FILE_JSON}`);
