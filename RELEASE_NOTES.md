@@ -1,5 +1,23 @@
 # Release Notes
 
+## v1.5.1 - Startup Diagnostics & Version Reporting (2026-11-18)
+
+### 🚀 New Features
+
+- **Runtime Version Reporting**: The server now logs its version at startup (`🏷️  Version: ...`). Defaults to `DEV` for local/dev builds; set to the Git release tag automatically when built via the `docker-publish.yml` GitHub Actions workflow, using a new `APP_VERSION` Docker build argument.
+- **`package.json` Version Sync**: The Docker build now syncs `package.json`'s `version` field to match `APP_VERSION` at build time (`npm pkg set version="${APP_VERSION}"`), so the deployed container's `package.json` reflects the actual running version for introspection.
+
+### 🛠️ Improvements
+
+- **Cache Invalidation URL Logging**: On startup, when `CACHE_API_KEY` is set, the server now logs the full list of available `DELETE /invalidate-cache/<service>` URLs (one per configured service, including `DEFAULT` in single `URL_PATTERN` mode) alongside the `POST /cleanup-cache` endpoint, making cache management endpoints easier to discover without reading source code.
+
+### 📋 Technical Notes
+
+- `APP_VERSION` is declared as a Dockerfile `ARG` (default `DEV`) and exported as an `ENV` so it's available both at build time (for the `npm pkg set` step) and at container runtime (for the startup log)
+- The release workflow (`docker-publish.yml`) now passes `--build-arg APP_VERSION=<git-tag>` when building and pushing images
+
+---
+
 ## v1.5.0 - Fallback Content-Disposition Filename (2026-11-08)
 
 ### 🛠️ Improvements
